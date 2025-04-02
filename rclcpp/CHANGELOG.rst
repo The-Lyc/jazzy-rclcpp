@@ -2,6 +2,9 @@
 Changelog for package rclcpp
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+
 28.1.7 (2025-03-26)
 -------------------
 * fix(ClockConditionalVariable): Fixed potential crash on shutdown (`#2762 <https://github.com/ros2/rclcpp/issues/2762>`_)
