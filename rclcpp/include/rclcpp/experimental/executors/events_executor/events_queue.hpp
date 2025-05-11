@@ -91,6 +91,27 @@ public:
   virtual
   size_t
   size() const = 0;
+
+  //#if defined(EXP_LATENCY)
+  /**
+   * @brief register event
+   * @param event_key The event to register
+   * @param pos The position of the event
+   * @param delta_time The delta time of the event
+   */
+  RCLCPP_PUBLIC
+  virtual
+  void
+  register_event(
+    [[maybe_unused]] const char * topic,
+    [[maybe_unused]] const void * timer_key,
+    [[maybe_unused]] const void * event_key,
+    [[maybe_unused]] const std::pair<int, int> pos,
+    [[maybe_unused]] const std::chrono::milliseconds::rep delta_time)
+  {
+    return;
+  }
+  //#endif
 };
 
 }  // namespace executors

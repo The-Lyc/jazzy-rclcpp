@@ -2,6 +2,29 @@ cmake_minimum_required(VERSION 3.20)
 
 project(rclcpp)
 
+option(EXP_LATENCY "Enable experiment-latency in rclcpp" OFF)
+option(EXP_SEP "set separate flag true" OFF)
+option(TEST_NEW "Enable test new" OFF)
+option(TEST_WHY "Enable test why" OFF)
+
+if(EXP_LATENCY)
+  add_compile_definitions(EXP_LATENCY)
+elseif(EXP_LATENCY STREQUAL "OFF")
+  message(STATUS "EXP_LATENCY is set to OFF")
+endif()
+
+if(EXP_SEP)
+  add_compile_definitions(EXP_SEP)
+endif()
+
+if(TEST_NEW)
+  add_compile_definitions(TEST_NEW)
+endif()
+
+if(TEST_WHY)
+  add_compile_definitions(TEST_WHY)
+endif()
+
 find_package(Threads REQUIRED)
 
 find_package(ament_cmake_ros REQUIRED)

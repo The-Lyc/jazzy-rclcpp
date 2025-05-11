@@ -17,6 +17,8 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <thread>
+#include <unistd.h>
 
 #include "rcpputils/scope_exit.hpp"
 
@@ -42,6 +44,22 @@ EventsExecutor::EventsExecutor(
   // or it can also take care of executing expired timers in its dedicated thread.
   std::function<void(const rclcpp::TimerBase *,
     const std::shared_ptr<void> &)> timer_on_ready_cb = nullptr;
+
+  #ifdef TEST_NEW
+  std::cout<<"------------------new code code------------------"<<std::endl;
+  #endif
+
+  #ifdef EXP_LATENCY
+  // This is a test code to check the latency of the timers
+  // It will be removed in the future
+  std::cout<<"------------------test code------------------"<<std::endl;
+  // std::this_thread::sleep_for(std::chrono::seconds(100));
+  #endif
+
+  #ifdef EXP_SEP
+  execute_timers_separate_thread = true;
+  std::cout<<"##############execute_timers_separate_thread is:"<<execute_timers_separate_thread<<std::endl;
+  #endif
   if (!execute_timers_separate_thread) {
     timer_on_ready_cb =
       [this](const rclcpp::TimerBase * timer_id, const std::shared_ptr<void> & data) {
@@ -114,6 +132,11 @@ EventsExecutor::spin()
 
   timers_manager_->start();
   RCPPUTILS_SCOPE_EXIT(timers_manager_->stop(); );
+
+  pid_t eventsExecutorID = getpid();
+  std::thread::id thread_id = std::this_thread::get_id();
+
+  std::cout << "events executor, pid:"<<eventsExecutorID<<",tid:"<<thread_id<<std::endl;
 
   while (rclcpp::ok(context_) && spinning.load()) {
     // Wait until we get an event
@@ -458,8 +481,8 @@ EventsExecutor::refresh_current_collection(
   current_entities_collection_->subscriptions.update(
     new_collection.subscriptions,
     [this](auto subscription) {
-      subscription->set_on_new_message_callback(
-        this->create_entity_callback(
+      subscription->set_on_new_message_callback(    
+          this->create_entity_callback(
           subscription->get_subscription_handle().get(), ExecutorEventType::SUBSCRIPTION_EVENT));
     },
     [](auto subscription) {subscription->clear_on_new_message_callback();});
@@ -504,6 +527,11 @@ EventsExecutor::create_entity_callback(
 {
   std::function<void(size_t)>
   callback = [this, entity_key, event_type](size_t num_events) {
+      if(event_type==ExecutorEventType::SUBSCRIPTION_EVENT) {
+        auto sub_pid = getpid();
+        std::thread::id sub_tid = std::this_thread::get_id();
+        std::cout << "subscription event, pid:"<<sub_pid<<",tid:"<<sub_tid<<std::endl;
+      }
       ExecutorEvent event = {entity_key, nullptr, -1, event_type, num_events};
       this->events_queue_->enqueue(event);
     };
