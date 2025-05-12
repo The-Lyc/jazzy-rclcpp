@@ -133,11 +133,6 @@ EventsExecutor::spin()
   timers_manager_->start();
   RCPPUTILS_SCOPE_EXIT(timers_manager_->stop(); );
 
-  pid_t eventsExecutorID = getpid();
-  std::thread::id thread_id = std::this_thread::get_id();
-
-  std::cout << "events executor, pid:"<<eventsExecutorID<<",tid:"<<thread_id<<std::endl;
-
   while (rclcpp::ok(context_) && spinning.load()) {
     // Wait until we get an event
     ExecutorEvent event;
@@ -527,11 +522,6 @@ EventsExecutor::create_entity_callback(
 {
   std::function<void(size_t)>
   callback = [this, entity_key, event_type](size_t num_events) {
-      if(event_type==ExecutorEventType::SUBSCRIPTION_EVENT) {
-        auto sub_pid = getpid();
-        std::thread::id sub_tid = std::this_thread::get_id();
-        std::cout << "subscription event, pid:"<<sub_pid<<",tid:"<<sub_tid<<std::endl;
-      }
       ExecutorEvent event = {entity_key, nullptr, -1, event_type, num_events};
       this->events_queue_->enqueue(event);
     };

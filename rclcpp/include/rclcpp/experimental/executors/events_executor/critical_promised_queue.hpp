@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__SIMPLE_EVENTS_QUEUE_HPP_
-#define RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__SIMPLE_EVENTS_QUEUE_HPP_
+#ifndef RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__CRITICAL_PROMISED_QUEUE_HPP_
+#define RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__CRITICAL_PROMISED_QUEUE_HPP_
 
 #include <condition_variable>
 #include <mutex>
@@ -30,6 +30,7 @@
 
 #include "rclcpp/experimental/executors/events_executor/events_queue.hpp"
 #include <rcl/subscription.h>
+
 namespace rclcpp
 {
 namespace experimental
@@ -43,15 +44,15 @@ namespace executors
  * unbounded without being pruned.
  * The simplicity of this implementation makes it suitable for optimizing CPU usage.
  */
-class SimpleEventsQueue : public EventsQueue
+class CriticalPromisedQueue : public EventsQueue
 {
 public:
   RCLCPP_PUBLIC
-  SimpleEventsQueue()
+  CriticalPromisedQueue()
   {
     #ifdef EXP_LATENCY
     start_time_ = std::chrono::steady_clock::now();
-    std::cout<<"------------------create txt------------------"<<std::endl;
+    std::cout<<"------------------critical queue create txt------------------"<<std::endl;
     // open file to store the latency
     outfile.open(file_name, std::ios::out | std::ios::app);
     if (!outfile.is_open()) {
@@ -61,7 +62,7 @@ public:
   }
 
   RCLCPP_PUBLIC
-  ~SimpleEventsQueue() override = default;
+  ~CriticalPromisedQueue() override = default;
 
   /**
    * @brief enqueue event into the queue
@@ -74,11 +75,23 @@ public:
   {
     rclcpp::experimental::executors::ExecutorEvent single_event = event;
 
-    single_event.num_events = 1;
+    bool flag = false;
+    if(is_critical_.count(single_event.entity_key) && is_critical_[single_event.entity_key])  flag=true;
+
     {
       std::unique_lock<std::mutex> lock(mutex_);
       for (size_t ev = 0; ev < event.num_events; ev++) {
-        event_queue_.push(single_event);
+
+        if(flag){
+          // push an event into the critical queue, and add the count
+          critical_queue_.push(single_event);
+          ready_criticals_++;
+        }else{
+          // push an event into the simple queue, and add the count
+          simple_queue_.push(single_event);
+          ready_simples_++;
+        }
+        
         #ifdef EXP_LATENCY
         //std::cout<<"add an event to events queue:"<<event.type<<"***now key is:"<<event.entity_key<<std::endl;
         auto time_point_ = std::chrono::steady_clock::now();
@@ -110,16 +123,29 @@ public:
     bool has_data = true;
     if (timeout != std::chrono::nanoseconds::max()) {
       has_data =
-        events_queue_cv_.wait_for(lock, timeout, [this]() {return !event_queue_.empty();});
+        events_queue_cv_.wait_for(lock, timeout, [this]() {return ready_criticals_||ready_simples_;});
     } else {
-      events_queue_cv_.wait(lock, [this]() {return !event_queue_.empty();});
+      events_queue_cv_.wait(lock, [this]() {return ready_criticals_||ready_simples_;});
     }
 
     
 
     if (has_data) {
-      event = event_queue_.front();
-      event_queue_.pop();
+      if(ready_criticals_)  {
+        // get an event from the critical queue, and pop it
+        event = critical_queue_.front();
+        critical_queue_.pop();
+        ready_criticals_--;
+      }else if(ready_simples_)  {
+        // get an event from the simple queue, and pop it
+        event = simple_queue_.front();
+        simple_queue_.pop();
+        ready_simples_--;
+      }else{
+        std::cerr << "no event in the queue" << std::endl;
+        return false;
+      }
+      
       #ifdef EXP_LATENCY
       // add count for each event
       int index_ = cnt_[event.entity_key];
@@ -135,8 +161,9 @@ public:
         pos= timer_info_[event.entity_key];
       }
       else{
-        if(!callback_to_timer_.count(event.entity_key)){
-          return true;
+        //check whether this event is in input DAG
+        if(!is_critical_.count(event.entity_key)){
+            return true;
         }
         // get the timer of this event
         auto timer_ = callback_to_timer_[event.entity_key];
@@ -154,7 +181,7 @@ public:
       auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
       auto microseconds = std::chrono::duration_cast<std::chrono::microseconds>(duration).count() % 1000;
       // output position and latency of this event
-      outfile <<"record time:"<<milliseconds<<"."<<microseconds
+      outfile <<"critical queue record time:"<<milliseconds<<"."<<microseconds
               <<";position:"<<pos.first<<","<<pos.second
               <<";latency:"<<latency_[event.entity_key][latency_[event.entity_key].size()-1]<<std::endl;    
       #endif
@@ -174,7 +201,8 @@ public:
   empty() const override
   {
     std::unique_lock<std::mutex> lock(mutex_);
-    return event_queue_.empty();
+
+    return ready_criticals_ == 0 && ready_simples_ == 0;
   }
 
   /**
@@ -187,10 +215,13 @@ public:
   size() const override
   {
     std::unique_lock<std::mutex> lock(mutex_);
-    return event_queue_.size();
+
+    // use a single number to include two counts
+    return (critical_queue_.size() << 32) + simple_queue_.size();
   }
 
-  
+  // hide the base class function
+  using EventsQueue::register_event;
   /**
    * @brief register event
    * @param event_key The event to register
@@ -202,14 +233,17 @@ public:
   register_event(
     const void * timer_key,
     const void * event_key,
-    [[maybe_unused]] bool is_critical,
+    bool is_critical,
     const std::pair<int, int> pos,
-    const std::chrono::milliseconds::rep delta_time) override
+    const std::chrono::milliseconds::rep delta_time) 
   {
     // if this event is not a timer event, store its timer
     if(pos.first != 0){
       callback_to_timer_[event_key] = timer_key;
     }
+    
+    // store whether this event is critical or not
+    is_critical_[event_key] = is_critical;
 
     // store the position of this event
     if(timer_key == event_key)  timer_info_[event_key] = pos;
@@ -221,7 +255,11 @@ public:
 
 private:
   // The underlying queue implementation
-  std::queue<rclcpp::experimental::executors::ExecutorEvent> event_queue_;
+  std::queue<rclcpp::experimental::executors::ExecutorEvent> critical_queue_;
+  std::queue<rclcpp::experimental::executors::ExecutorEvent> simple_queue_;
+  std::map<const void *, bool> is_critical_;
+  uint64_t ready_criticals_ = 0;
+  uint64_t ready_simples_ = 0;
   #ifdef EXP_LATENCY
   // The queue used to store the time points of the events
   // This is used to keep track of the time points of the events
@@ -236,7 +274,7 @@ private:
   std::map<const void *, std::chrono::milliseconds::rep> delta_;
 
   std::ofstream outfile;
-  std::string file_name = "/home/lyc/wkspace/exp4_timermanager_latency/latency.txt";
+  std::string file_name = "/home/lyc/wkspace/exp5_critical_queue/latency.txt";
   #endif
   // Mutex to protect read/write access to the queue
   mutable std::mutex mutex_;
@@ -248,4 +286,4 @@ private:
 }  // namespace experimental
 }  // namespace rclcpp
 
-#endif  // RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__SIMPLE_EVENTS_QUEUE_HPP_
+#endif  // RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__CRITICAL_PROMISED_QUEUE_HPP_

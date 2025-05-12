@@ -103,9 +103,9 @@ public:
   virtual
   void
   register_event(
-    [[maybe_unused]] const char * topic,
     [[maybe_unused]] const void * timer_key,
     [[maybe_unused]] const void * event_key,
+    [[maybe_unused]] bool is_critical,
     [[maybe_unused]] const std::pair<int, int> pos,
     [[maybe_unused]] const std::chrono::milliseconds::rep delta_time)
   {
