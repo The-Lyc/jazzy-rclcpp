@@ -27,6 +27,7 @@
 #include "rclcpp/experimental/executors/events_executor/events_queue.hpp"
 #include "rclcpp/experimental/executors/events_executor/simple_events_queue.hpp"
 #include "rclcpp/experimental/executors/events_executor/critical_promised_queue.hpp"
+#include "rclcpp/experimental/executors/events_executor/qos_promised_queue.hpp"
 #include "rclcpp/experimental/timers_manager.hpp"
 #include "rclcpp/node.hpp"
 

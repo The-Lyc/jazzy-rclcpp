@@ -6,6 +6,7 @@ option(EXP_LATENCY "Enable experiment-latency in rclcpp" OFF)
 option(EXP_SEP "set separate flag true" OFF)
 option(TEST_NEW "Enable test new" OFF)
 option(TEST_WHY "Enable test why" OFF)
+option(EXP_QOS "Enable experiment-qos in rclcpp" OFF)
 
 if(EXP_LATENCY)
   add_compile_definitions(EXP_LATENCY)
@@ -23,6 +24,10 @@ endif()
 
 if(TEST_WHY)
   add_compile_definitions(TEST_WHY)
+endif()
+
+if(EXP_QOS)
+  add_compile_definitions(EXP_QOS)
 endif()
 
 find_package(Threads REQUIRED)

@@ -63,6 +63,9 @@ EventsExecutor::EventsExecutor(
   if (!execute_timers_separate_thread) {
     timer_on_ready_cb =
       [this](const rclcpp::TimerBase * timer_id, const std::shared_ptr<void> & data) {
+        #ifdef EXP_QOS
+        if(events_queue_->add_token(timer_id))  return;
+        #endif
         ExecutorEvent event = {timer_id, data, -1, ExecutorEventType::TIMER_EVENT, 1};
         this->events_queue_->enqueue(event);
       };
@@ -522,6 +525,7 @@ EventsExecutor::create_entity_callback(
 {
   std::function<void(size_t)>
   callback = [this, entity_key, event_type](size_t num_events) {
+ 
       ExecutorEvent event = {entity_key, nullptr, -1, event_type, num_events};
       this->events_queue_->enqueue(event);
     };

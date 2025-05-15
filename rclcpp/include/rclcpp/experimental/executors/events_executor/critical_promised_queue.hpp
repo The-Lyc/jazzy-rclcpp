@@ -220,8 +220,7 @@ public:
     return (critical_queue_.size() << 32) + simple_queue_.size();
   }
 
-  // hide the base class function
-  using EventsQueue::register_event;
+  #ifdef EXP_LATENCY
   /**
    * @brief register event
    * @param event_key The event to register
@@ -251,7 +250,7 @@ public:
     // store the delta time of this event
     delta_[event_key] = delta_time;
   }
-  
+  #endif
 
 private:
   // The underlying queue implementation

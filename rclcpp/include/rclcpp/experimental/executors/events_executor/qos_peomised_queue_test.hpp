@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__SIMPLE_EVENTS_QUEUE_HPP_
-#define RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__SIMPLE_EVENTS_QUEUE_HPP_
+#ifndef RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__QOS_PROMISED_QUEUE_HPP_
+#define RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__QOS_PROMISED_QUEUE_HPP_
 
 #include <condition_variable>
 #include <mutex>
@@ -30,6 +30,17 @@
 
 #include "rclcpp/experimental/executors/events_executor/events_queue.hpp"
 #include <rcl/subscription.h>
+
+typedef std::pair<int,rclcpp::experimental::executors::ExecutorEvent> qos_t;
+
+struct Compare
+{
+  bool operator()(const qos_t & lhs, const qos_t & rhs)
+  {
+    return lhs.first < rhs.first;
+  }
+};
+
 namespace rclcpp
 {
 namespace experimental
@@ -43,11 +54,11 @@ namespace executors
  * unbounded without being pruned.
  * The simplicity of this implementation makes it suitable for optimizing CPU usage.
  */
-class SimpleEventsQueue : public EventsQueue
+class QosPromisedQueue : public EventsQueue
 {
 public:
   RCLCPP_PUBLIC
-  SimpleEventsQueue()
+  QosPromisedQueue()
   {
     #ifdef EXP_LATENCY
     start_time_ = std::chrono::steady_clock::now();
@@ -61,7 +72,7 @@ public:
   }
 
   RCLCPP_PUBLIC
-  ~SimpleEventsQueue() override = default;
+  ~QosPromisedQueue() override = default;
 
   /**
    * @brief enqueue event into the queue
@@ -78,7 +89,11 @@ public:
     {
       std::unique_lock<std::mutex> lock(mutex_);
       for (size_t ev = 0; ev < event.num_events; ev++) {
-        event_queue_.push(single_event);
+        int priority = 99;
+        if(priority_.count(single_event.entity_key)){
+          priority = priority_[single_event.entity_key];
+        }
+        event_queue_.push({priority,single_event});
         #ifdef EXP_LATENCY
         //std::cout<<"add an event to events queue:"<<event.type<<"***now key is:"<<event.entity_key<<std::endl;
         auto time_point_ = std::chrono::steady_clock::now();
@@ -118,8 +133,24 @@ public:
     
 
     if (has_data) {
-      event = event_queue_.front();
+      qos_t event_pair = event_queue_.front();
+      event = event_pair.second;
       event_queue_.pop();
+      if(event.type == TIMER_EVENT){
+        // only timers use tokens 
+        if(!tokens_.count(event.entity_key)){
+            return true;
+        }else{
+            size_t token = tokens_[event.entity_key];
+            if(token > 1){
+                if(!in_hf_queue_.count(event.entity_key)){
+                    // this timer in low frequency queue and has more than 1 token
+                    // need to
+                }
+            }
+        }
+      }
+      
       #ifdef EXP_LATENCY
       // add count for each event
       int index_ = cnt_[event.entity_key];
@@ -190,7 +221,7 @@ public:
     return event_queue_.size();
   }
 
-  #ifdef EXP_LATENCY
+  
   /**
    * @brief register event
    * @param event_key The event to register
@@ -217,11 +248,32 @@ public:
     // store the delta time of this event
     delta_[event_key] = delta_time;
   }
-  #endif
+
+    /**
+     * @brief register event's priority
+     * @param event_key The event to register
+     * @param priority The priority of the event
+     */
+  RCLCPP_PUBLIC
+  void
+  register_priority(
+    const void * event_key,
+    int priority)
+  {
+    // store the priority of this event
+    priority_[event_key] = priority;
+  }
+  
 
 private:
   // The underlying queue implementation
-  std::queue<rclcpp::experimental::executors::ExecutorEvent> event_queue_;
+  std::priority_queue<qos_t,std::vector<qos_t>,Compare> event_queue_;
+  // The tokens bucket
+  std::map<const void *, size_t> tokens_;
+  // The map used to store the priority of the events
+  std::map<const void *, int> priority_;
+  // To store whether this event is in high frequency queue or not
+  std::map<const void *, bool> in_hf_queue_;
   #ifdef EXP_LATENCY
   // The queue used to store the time points of the events
   // This is used to keep track of the time points of the events
@@ -240,6 +292,8 @@ private:
   #endif
   // Mutex to protect read/write access to the queue
   mutable std::mutex mutex_;
+  // Mutex to protect read/write access to the priority
+  mutable std::mutex mutex_priority_;
   // Variable used to notify when an event is added to the queue
   std::condition_variable events_queue_cv_;
 };
@@ -248,4 +302,4 @@ private:
 }  // namespace experimental
 }  // namespace rclcpp
 
-#endif  // RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__SIMPLE_EVENTS_QUEUE_HPP_
+#endif  // RCLCPP__EXPERIMENTAL__EXECUTORS__EVENTS_EXECUTOR__QOS_PROMISED_QUEUE_HPP_

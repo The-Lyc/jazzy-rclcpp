@@ -92,7 +92,7 @@ public:
   size_t
   size() const = 0;
 
-  //#if defined(EXP_LATENCY)
+  #ifdef EXP_LATENCY
   /**
    * @brief register event
    * @param event_key The event to register
@@ -111,7 +111,18 @@ public:
   {
     return;
   }
-  //#endif
+  #endif
+
+  #ifdef EXP_QOS
+  RCLCPP_PUBLIC
+  virtual
+  bool
+  add_token(
+    [[maybe_unused]] const void * event_key)
+  {
+    return false;
+  }
+  #endif
 };
 
 }  // namespace executors
