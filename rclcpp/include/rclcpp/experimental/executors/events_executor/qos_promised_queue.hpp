@@ -32,15 +32,16 @@
 #include "rclcpp/experimental/executors/events_executor/events_queue.hpp"
 #include <rcl/subscription.h>
 
-typedef std::pair<size_t,rclcpp::experimental::executors::ExecutorEvent> event_pair_t;
+typedef std::pair<const void *,size_t> timer_priority_t;
 
-struct Compare_event_pair
+struct Compare_timer_priority_t
 {
-  bool operator()(const event_pair_t & lhs, const event_pair_t & rhs)
+  bool operator()(const timer_priority_t & lhs, const timer_priority_t & rhs) const
   {
-    return lhs.first < rhs.first;
+    return lhs.second > rhs.second;
   }
 };
+
 
 namespace rclcpp
 {
@@ -90,11 +91,8 @@ public:
     {
       std::unique_lock<std::mutex> lock(mutex_);
       for (size_t ev = 0; ev < event.num_events; ev++) {
-        size_t priority = 99;
-        if(priority_.count(single_event.entity_key)){
-          priority = priority_[single_event.entity_key];
-        }
-        event_queue_.push({priority,single_event});
+        event_queue_.push(single_event);
+        if(registered_events_.find(single_event.entity_key) != registered_events_.end())  registered_events_in_queue_++;
         #ifdef EXP_LATENCY
         //std::cout<<"add an event to events queue:"<<event.type<<"***now key is:"<<event.entity_key<<std::endl;
         auto time_point_ = std::chrono::steady_clock::now();
@@ -105,7 +103,23 @@ public:
         #endif
       }
     }
-    // std::cout<<"$$$$$ now size is:"<<this->size()<<std::endl;
+    events_queue_cv_.notify_one();
+  }
+
+  /**
+   * @brief put this timer into buffer_, and notify
+   * 
+   * @param timer_key 
+   * @return RCLCPP_PUBLIC void
+   */
+  RCLCPP_PUBLIC
+  void
+  increase_buffer(
+    const void * timer_key
+  ) override
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    buffer_[timer_key]++;
     events_queue_cv_.notify_one();
   }
 
@@ -126,131 +140,35 @@ public:
     bool has_data = true;
     if (timeout != std::chrono::nanoseconds::max()) {
       has_data =
-        events_queue_cv_.wait_for(lock, timeout, [this]() {return !event_queue_.empty();});
+        events_queue_cv_.wait_for(lock, timeout, [this]() {
+          if(!event_queue_.empty() || !buffer_empty_unsafe()) return true;
+          else  return false;});
     } else {
-      events_queue_cv_.wait(lock, [this]() {return !event_queue_.empty();});
+      events_queue_cv_.wait(lock, [this]() {
+        if(!event_queue_.empty() || !buffer_empty_unsafe()) return true;
+        else  return false;});
     }
 
-    
-
     if (has_data) {
-      event_pair_t event_pair = event_queue_.top();
-      event = event_pair.second;
-      event_queue_.pop();
-      if(event.type == TIMER_EVENT){
-        // only timers use tokens 
-        if(!tokens_.count(event.entity_key)){
-            // this timer is not in our system, so execute it directly
-            return true;
-        }else{
-          size_t token = tokens_[event.entity_key];
-          if(token > 1){
-              // execute frequency is lower than token's release frequency of current queue
-              if(!in_hf_queue_.count(event.entity_key)){
-                  // this timer in low frequency queue and has >= 1 tokens -> under QoS!
-                  // need to move all timers in high frequency queue to low frequency queue
-                  // hf -> lf : if tokens >= 1, reserve one token in lf
-                  //            if tokens == 0, keep tokens = 0
-                  is_under_qos_[event.entity_key] = true;
-                  for(auto it = tokens_.begin(); it != tokens_.end(); ++it){
-                    auto timer_key = it->first;
-                    // if this timer is not in high frequency queue, continue
-                    if(!in_hf_queue_.count(timer_key)){
-                      continue;
-                    }
-                    // if this timer is in high frequency queue, move it to low frequency queue
-                    auto token_ = it->second;
-                    if(token_ >= 1){
-                      // this timer in high frequency queue and has >= 1 tokens
-                      // need to move it to low frequency queue and reserve 1 token
-                      it->second = 1;
-                      in_hf_queue_[timer_key] = false;
-                    }else{
-                      // this timer in high frequency queue and has 0 tokens
-                      // need to move it to low frequency queue and keep tokens = 0
-                      it->second = 0;
-                      in_hf_queue_[timer_key] = false;
-                    }                        
-                  }
-              }else{
-                  // this timer is in high frequency queue and has >= 1 tokens -> under hf!
-                  // move it and, 
-                  // timers those in high frequency queue and priority lower than this one, 
-                  // to low frequency queue
-                  size_t current_priority = event_pair.first;
-                  for(auto it = tokens_.begin(); it != tokens_.end(); ++it){
-                    auto timer_key = it->first;
-                    if(!in_hf_queue_.count(timer_key) || priority_[timer_key] > current_priority){
-                      // this timer is not in high frequency queue or has higher priority than current one
-                      // so, keep it in high frequency queue
-                      continue;
-                    }
-                    // move it to low frequency queue
-                    auto token_ = it->second;
-                    if(token_ >= 1){
-                      // this timer in high frequency queue and has >= 1 tokens
-                      // need to move it to low frequency queue and reserve one token
-                      it->second = 1;
-                      in_hf_queue_[timer_key] = false;
-                    }else{
-                      // this timer in high frequency queue and has 0 tokens
-                      // need to move it to low frequency queue and keep tokens = 0
-                      it->second = 0;
-                      in_hf_queue_[timer_key] = false;
-                    }                        
-                  }
-              }
-          }else if(token == 1){
-              // execute frequency equal to token's release frequency of current queue
-              // this timer should be keep staying in current queue
-              // so, take one token from it and dequeue it
-              tokens_[event.entity_key]--;
-              // check whether this timer was under QoS or not
-              if(is_under_qos_[event.entity_key]){
-                  is_under_qos_.erase(event.entity_key);
-              }
-              //return true;
-          }else{
-            // execute frequency is higher than token's release frequency of current queue
-            if(!in_hf_queue_.count(event.entity_key)){
-                // this timer is not in high frequency queue and has 0 tokens
-                // check whether this timer has the highest priority in the queue
-                size_t current_priority = event_pair.first;
-                bool flag = true;
-                for(auto it : tokens_){
-                    auto timer_key = it.first;
-                    if(!in_hf_queue_.count(timer_key)){
-                        continue;
-                    }
-                    if(priority_[timer_key] > current_priority){
-                        // this timer has higher priority than current one
-                        flag = false;
-                        break;
-                    }
-                }
-                if(flag){
-                    // this timer has the highest priority in the queue
-                    // additionally check whether there's still timers under QoS
-                    // if no timer under QoS, dequeue this timer even if its tokens is 0
-                    if(is_under_qos_.size()){
-                        in_hf_queue_[event.entity_key] = true;
-                        tokens_[event.entity_key] = 0;
-                        //return true;
-                    }
-                }
-                // else, either this timer is not the highest priority in the queue
-                // or there are still timers under QoS, 
-                // so we need to check
-                // so we omit this timer for higher priority ones or under QoS ones
-                return false;
-            }else{
-                // this timer is in high frequency queue and has 0 tokens
-                // this is impossible, do nothing and skip
-                return false;
-            }
-          }
+      if(!get_count_in_queue()){
+        auto next_timer = get_timer_from_buffer();
+        if(next_timer != nullptr) {
+          rclcpp::experimental::executors::ExecutorEvent new_event = {
+          next_timer, nullptr, -1, ExecutorEventType::TIMER_EVENT, 1};
+          event_queue_.push(new_event);
+          registered_events_in_queue_++;
+        } else {
+          std::cout<<"!!!!!!!!!!!!get an empty next timer!!!!!!!!!!"<<std::endl;
         }
       }
+      // get an event from event_queue_
+      if(event_queue_.size()==0) {
+        std::cout<<"!!!!!!!!!!!!get an empty event!!!!!!!!!!"<<std::endl;
+      }
+      event = event_queue_.front();
+      event_queue_.pop();
+      if(registered_events_.find(event.entity_key) != registered_events_.end()) registered_events_in_queue_--;
+      
       #ifdef EXP_LATENCY
       // add count for each event
       int index_ = cnt_[event.entity_key];
@@ -296,6 +214,42 @@ public:
   }
 
   /**
+   * @brief Get the timer from buffer object
+   * 
+   * @return const void* 
+   */
+  const void *
+  get_timer_from_buffer()
+  {
+    std::unique_lock<std::mutex> lock(mutex_tokens_);
+    auto front = under_qos_set_.begin();
+    if(front != under_qos_set_.end()){
+      auto timer = front->first;
+      if(hf_tokens_[timer]>0){
+        consume_token_unsafe(timer);
+      }
+      if(lf_tokens_[timer]<0){
+        // achieve QoS requirements, put this timer to under_origin_set
+        under_qos_set_.erase(front);
+        under_origin_set_.insert({timer,priority_[timer]});
+      }
+      // buffer --
+      buffer_[timer]--;
+      return timer;
+    }
+
+    front = under_origin_set_.begin();
+    if(front != under_origin_set_.end()){
+      auto timer = front->first;
+      consume_token_unsafe(timer);
+      buffer_[timer]--;
+      return timer;
+    }
+
+    return nullptr;
+  }
+
+  /**
    * @brief Test whether queue is empty
    * Thread safe
    * @return true if the queue's size is 0, false otherwise.
@@ -319,6 +273,28 @@ public:
   {
     std::unique_lock<std::mutex> lock(mutex_);
     return event_queue_.size();
+  }
+
+  RCLCPP_PUBLIC
+  size_t
+  get_count_in_queue()
+  {
+    return registered_events_in_queue_;
+  }
+
+  /**
+   * @brief 
+   * 
+   * @return RCLCPP_PUBLIC 
+   */
+  RCLCPP_PUBLIC
+  bool
+  buffer_empty_unsafe()
+  {
+    for(auto it : buffer_){
+      if(it.second>0) return false;
+    }
+    return true;
   }
 
   #ifdef EXP_LATENCY
@@ -364,33 +340,102 @@ public:
     // store the priority of this event
     priority_[event_key] = priority;
   }
+
+
+  /**
+   * @brief consume a token of this timer from both hf and lf token buckets
+   * @param timer_key The timer key of the event
+   */
+  RCLCPP_PUBLIC
+  void
+  consume_token_unsafe(
+    const void * timer_key
+  )
+  {
+    hf_tokens_[timer_key]--;
+    lf_tokens_[timer_key]--;
+    auto timer_pair_ = std::make_pair(timer_key,priority_[timer_key]);
+    
+    if(under_qos_set_.find(timer_pair_)!=under_qos_set_.end()){
+      // timer is in under_qos state
+      if(lf_tokens_[timer_key]<=0){
+        // need to remove from under qos state
+        under_qos_set_.erase(timer_pair_);
+        if(hf_tokens_[timer_key]>=1){
+          // need to move to under origin state
+          under_origin_set_.insert(timer_pair_);
+        }
+        // else, move to original state, do nothing
+        // neither in under qos nor in under origin, is original state
+      } 
+    } else if(under_origin_set_.find(timer_pair_)!=under_origin_set_.end()) {
+      // timer is in under origin state
+      // only possible to move to original state or stay in under origin state
+      if(hf_tokens_[timer_key]<=0){
+        // need to move to original state
+        under_origin_set_.erase(timer_pair_);
+      }
+    } else {
+      // timer is in original state, it's impossible. skip
+    }
+  }
   
   /**
    * @brief add a token to the event, return true if this event is only used to produce token, 
    * so don't enqueue it
-   * @param event_key The event to register
+   * @param producer_key The producer key of the event
    */
   RCLCPP_PUBLIC
   bool
-  add_token(
-    const void * event_key)
+  produce_token(
+    const void * producer_key) override
   {
-    size_t hf_ = hf_token_producers_.count(event_key);
-    size_t lf_ = lf_token_producers_.count(event_key);
+    size_t hf_ = hf_token_producers_.count(producer_key);
+    size_t lf_ = lf_token_producers_.count(producer_key);
     // check whether this event is in our system
     if(!hf_ && !lf_){
       // this event is not in our system, so do nothing
       return false;
     }
-    auto event_ = producer_to_event_[event_key];
-    // check whether the queue we want to add is the queue timer is in
+    auto timer_ = producer_to_timer_[producer_key];
+
+    std::unique_lock<std::mutex> lock2(mutex_tokens_); 
+    auto timer_pair_ = std::make_pair(timer_,priority_[timer_]);
+    // check type of this token (hf token or lf token)
     // add token to this event
-    if(lf_ && !in_hf_queue_[event_]){
-      // It's a lf token and this event is in low frequency queue
-      tokens_[event_]++;
-    }else if(hf_ && in_hf_queue_[event_]){
-      // It's a hf token and this event is in high frequency queue
-      tokens_[event_]++;
+    if(lf_){
+      // It's a lf token 
+      // check token counts
+      if(lf_tokens_[timer_]<0){
+        // lf tokens have been all consumed so far.
+        // A negative number indicates that this timer has met the QoS requirements 
+        // and even consumed more HF tokens. 
+        // Therefore, this LF token is used to compensate for the deviation.
+        lf_tokens_[timer_] = 0;
+        
+        // timer is either in original state or under_origin state, 
+        // because we haven't changed HF tokens, so timer needs to stay in its state
+        // do nothing
+      }else{
+        // After producing this token, this timer no longer meets the QoS requirements.
+        // So, we need to put this timer into under_qos_set
+        lf_tokens_[timer_]++;
+        if(under_origin_set_.find(timer_pair_) != under_origin_set_.end()){
+          // this timer is in under_origin_set
+          // so, we need to remove it from under_origin_set
+          under_origin_set_.erase(timer_pair_);
+          // put this timer into under_qos_set
+          under_qos_set_.insert(timer_pair_);
+        }   
+      }
+    }else if(hf_){
+      // It's a HF token and add it to the HF token bucket
+      hf_tokens_[timer_]++;
+      // check LF token counts, if LF tokens have been all consumed so far(means this timer is in FULL state)
+      // put this timer into under_origin_set
+      if(lf_tokens_[timer_] <= 0){
+        under_origin_set_.insert(timer_pair_);
+      }
     }
 
     if(lf_)   return true;
@@ -407,33 +452,62 @@ public:
     // store this producer to the right set
     if(is_hf_){
       hf_token_producers_.insert(producer_key);
+      hf_tokens_[consumer_key] = 0;
     }else{
       lf_token_producers_.insert(producer_key);
+      lf_tokens_[consumer_key] = 0;
     }
     // store the connection between the producer and the consumer
-    producer_to_event_[producer_key] = consumer_key;
-    // init the state of this consumer
-    tokens_[consumer_key] = 0;
-    in_hf_queue_[consumer_key] = true;
-    is_under_qos_[consumer_key] = false;
+    // consumer is just the timer connected with this producer
+    producer_to_timer_[producer_key] = consumer_key;
+    // init the buffer state of this consumer
+    buffer_[consumer_key] = 0;
+  }
+
+  RCLCPP_PUBLIC
+  void
+  register_qos_event(
+    const void * event_key
+  )
+  {
+    registered_events_.insert(event_key);
+  }
+
+  RCLCPP_PUBLIC
+  bool
+  is_timer_in_system(
+    const void * timer_key
+  ) override
+  {
+    if(registered_events_.find(timer_key) != registered_events_.end())  return true;
+    else  return false;
   }
 
 private:
+  // The timer buffer used to cache ready timers send by the timers manager and send a reasonable timer to executor
+  std::priority_queue<timer_priority_t,std::vector<timer_priority_t>,Compare_timer_priority_t> timer_buffer_;
   // The underlying queue implementation
-  std::priority_queue<event_pair_t,std::vector<event_pair_t>,Compare_event_pair> event_queue_;
-  // The tokens bucket
-  std::map<const void *, size_t> tokens_;
-  // The map used to store the priority of the events
+  std::queue<rclcpp::experimental::executors::ExecutorEvent> event_queue_;
+  // The hf tokens bucket, key is timer, value is the number of tokens
+  std::map<const void *, int> hf_tokens_;
+  // The lf tokens bucket, key is timer, value is the number of tokens
+  std::map<const void *, int> lf_tokens_;
+  // The map used to store the priority of the timers
   std::map<const void *, size_t> priority_;
-  // To store whether this event is in high frequency queue or not
-  std::map<const void *, bool> in_hf_queue_;
-  // To store whether this event is under QoS or not
-  std::map<const void *, bool> is_under_qos_;
   // The producers of the two token buckets
   std::set<const void *> hf_token_producers_;
   std::set<const void *> lf_token_producers_;
   // The connection between the event and the producer
-  std::map<const void *, const void *> producer_to_event_;
+  std::map<const void *, const void *> producer_to_timer_;
+  // The set storing the timers under QoS
+  std::set<timer_priority_t,Compare_timer_priority_t> under_qos_set_;
+  // The set storing the timers between original frequency and QoS frequency
+  std::set<timer_priority_t,Compare_timer_priority_t> under_origin_set_;
+  // The map used to store the whole timers' buffer
+  std::map<const void *, size_t> buffer_;
+
+  size_t registered_events_in_queue_ = 0;
+  std::set<const void *> registered_events_;
 
   #ifdef EXP_LATENCY
   // The queue used to store the time points of the events
@@ -451,10 +525,11 @@ private:
   std::ofstream outfile;
   std::string file_name = "/home/lyc/wkspace/exp4_timermanager_latency/latency.txt";
   #endif
-  // Mutex to protect read/write access to the queue
+  // Mutex to protect read/write access to the events queue
   mutable std::mutex mutex_;
-  // Mutex to protect read/write access to the priority
-  mutable std::mutex mutex_priority_;
+  // Mutex to protect read/write access to the set
+  mutable std::mutex mutex_set_;
+  mutable std::mutex mutex_tokens_;
   // Variable used to notify when an event is added to the queue
   std::condition_variable events_queue_cv_;
 };

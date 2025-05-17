@@ -122,6 +122,44 @@ public:
   {
     return false;
   }
+
+  RCLCPP_PUBLIC
+  virtual
+  void
+  increase_buffer(
+    [[maybe_unused]] const void * timer_key)
+  {
+    return;
+  }
+
+  RCLCPP_PUBLIC
+  virtual
+  bool
+  produce_token(
+    [[maybe_unused]] const void * timer_key)
+  {
+    return false;
+  }
+
+
+  RCLCPP_PUBLIC
+  virtual
+  void
+  register_qos_event(
+    [[maybe_unused]] const void * event_key
+  )
+  {
+    return;
+  }
+
+  RCLCPP_PUBLIC
+  virtual
+  bool is_timer_in_system(
+    [[maybe_unused]]const void * timer_key
+  )
+  {
+    return false;
+  }
   #endif
 };
 

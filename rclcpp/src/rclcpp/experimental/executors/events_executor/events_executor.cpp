@@ -64,7 +64,11 @@ EventsExecutor::EventsExecutor(
     timer_on_ready_cb =
       [this](const rclcpp::TimerBase * timer_id, const std::shared_ptr<void> & data) {
         #ifdef EXP_QOS
-        if(events_queue_->add_token(timer_id))  return;
+        if(events_queue_->is_timer_in_system(timer_id)){
+          if(events_queue_->produce_token(timer_id))  return;
+          this->events_queue_->increase_buffer(timer_id);
+          return;
+        }
         #endif
         ExecutorEvent event = {timer_id, data, -1, ExecutorEventType::TIMER_EVENT, 1};
         this->events_queue_->enqueue(event);
@@ -140,7 +144,9 @@ EventsExecutor::spin()
     // Wait until we get an event
     ExecutorEvent event;
     bool has_event = events_queue_->dequeue(event);
+    std::cout<<"-----------has event:"<<has_event<<"------------"<<std::endl;
     if (has_event) {
+      std::cout<<"##############get an event#############"<<std::endl;
       this->execute_event(event);
     }
   }
